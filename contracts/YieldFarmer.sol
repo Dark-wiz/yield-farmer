@@ -2,11 +2,11 @@ pragma solidity ^0.5.7;
 pragma experimental ABIEncoderV2;
 
 import "@studydefi/money-legos/dydx/contracts/DydxFlashloanBase.sol";
-import "@studyDefi/money-legos/dydx/contracts/ICallee.sol";
+import "@studydefi/money-legos/dydx/contracts/ICallee.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Compound.sol";
 
-contract YieldFarmer is ICallee, DydxFlashloanBase {
+contract YieldFarmer is ICallee, DydxFlashloanBase, Compound {
     enum Direction {Deposit, Withdraw}
     struct Operation {
         address token;
@@ -17,13 +17,32 @@ contract YieldFarmer is ICallee, DydxFlashloanBase {
     }
     address public owner;
 
-    constructor() {
+    constructor(address _comptroller) Compound(_comptroller) public {
         owner = msg.sender;
     }
-
-    function openPosition(address _solo, address _token, address _cToken, uint _amountProvided, uint amountBorrowed) external {
+    
+    function openPosition(address _solo, address _token, address _cToken, uint _amountProvided, uint _amountBorrowed) external {
         require(msg.sender == owner, 'only owner');
         _initiateFlashloan(_solo, _token, _cToken, Direction.Deposit, _amountProvided - 2, _amountBorrowed);
+    }
+
+    function closePosition(address _solo, address _token, address _cToken) external {
+        require(msg.sender == owner, 'only owner');
+        IERC20(_token).transferFrom(msg.sender, address(this), 2);
+        claimComp();
+        uint borrowBalance  = getBorrowBalance(_cToken);
+        _initiateFlashloan(_solo, _token, _cToken, Direction.Withdraw, 0, borrowBalance);
+
+        //send COMP token to user
+        address compAddress = getCompAddress();
+        IERC20 comp = IERC20(compAddress);
+        uint compBalance = comp.balanceOf(address(this));
+        comp.transfer(msg.sender, compBalance);
+
+        //send token plus interest to user
+        IERC20 token = IERC20(_token);
+        uint tokenBalance = token.balanceOf(address(this));
+        token.transfer(msg.sender, tokenBalance);
     }
 
     function callFunction(address sender, Account.Info memory account, bytes memory data) public {
@@ -33,6 +52,10 @@ contract YieldFarmer is ICallee, DydxFlashloanBase {
             supply(operation.cToken, operation.amountProvided + operation.amountBorrowed);
             enterMarket(operation.cToken);
             borrow(operation.cToken, operation.amountBorrowed);
+        }else{
+            repayBorrow(operation.cToken, operation.amountBorrowed);
+            uint cTokenBalance = getcTokenBalance(operation.cToken);
+            redeem(operation.cToken, cTokenBalance); 
         }
     }
 
